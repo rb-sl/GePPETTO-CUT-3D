@@ -4,6 +4,7 @@ Script adapted from https://github.com/taesungp/contrastive-unpaired-translation
 from options.test_options import TestOptions
 from data import create_dataset
 from models import create_model
+
 from skimage import io as skio
 from pathlib import Path
 import numpy as np
@@ -23,8 +24,8 @@ class GePPETTOOptions(TestOptions):
 
 def extract_image(image):
     np_image = image.clamp(-1.0, 1.0).detach().cpu().numpy()
-    np_image = (np_image[0].transpose(1, 2, 0) + 1) / 2 * 255
-    return np_image.astype(np.uint8)
+    np_image = (np_image[0].transpose(1, 2, 3, 0) + 1) / 2 * 255
+    return np_image.astype(np.uint8).squeeze()
 
 if __name__ == '__main__':
     opt = GePPETTOOptions().parse()  # get test options
@@ -33,7 +34,7 @@ if __name__ == '__main__':
     input_masks_dir = Path(opt.input_masks_dir)
     real_images_dir = Path(opt.real_images_dir)
 
-    # Converts the masks and saves them in the cache folder
+    # Flattens the masks and saves them in the cache folder
     cache_dir_A = base_cache_dir / "testA"
     fake_cache_trainA = base_cache_dir / "trainA"
     if cache_dir_A.is_symlink():
@@ -41,8 +42,7 @@ if __name__ == '__main__':
         fake_cache_trainA.unlink()
     cache_dir_A.symlink_to(input_masks_dir)
     fake_cache_trainA.symlink_to(input_masks_dir)
-   
-    # Saves the images in the cache folder
+
     cache_dir_B = base_cache_dir / "testB"
     fake_cache_trainB = base_cache_dir / "trainB"
     if cache_dir_B.is_symlink():
@@ -77,21 +77,22 @@ if __name__ == '__main__':
         if i == 0:
             model.data_dependent_initialize(data)
             model.setup(opt)               # regular setup: load and print networks; create schedulers
-            model.parallelize()
+            if opt.gpu_ids != "-1":
+                model.parallelize()
             if opt.eval:
                 model.eval()
         model.set_input(data)  # unpack data from data loader
         model.test()           # run inference
         visuals = model.get_current_visuals()  # get image results
 
-        image_id = Path(data["A_paths"][0]).stem.split("_")[-1]
+        image_id = Path(data["A_paths"][0]).stem.split("_")[1]
 
         if show_example:
             for image_name, image in visuals.items():
                 skio.imsave(example_dir / f"{image_id}_{image_name}.tif", extract_image(image))
             show_example = False
         
-        skio.imsave(output_dir / f"synth_sample_{image_id}.tif", extract_image(visuals["fake_B"]).squeeze())
+        skio.imsave(output_dir / f"image_{image_id}_{i}.tif", extract_image(visuals["fake_B"]))
 
     # fake_cache_trainA.unlink()
     # shutil.rmtree(cache_dir_A)

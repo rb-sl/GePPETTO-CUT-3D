@@ -22,7 +22,7 @@ class CUTModel(BaseModel):
         """
         parser.add_argument('--CUT_mode', type=str, default="CUT", choices='(CUT, cut, FastCUT, fastcut)')
 
-        parser.add_argument('--lambda_GAN', type=float, default=1.0, help='weight for GAN loss: GAN(G(X))')
+        parser.add_argument('--lambda_GAN', type=float, default=1.0, help='weight for GAN loss：GAN(G(X))')
         parser.add_argument('--lambda_NCE', type=float, default=1.0, help='weight for NCE loss: NCE(G(X), X)')
         parser.add_argument('--nce_idt', type=util.str2bool, nargs='?', const=True, default=False, help='use NCE loss for identity mapping: NCE(G(Y), Y))')
         parser.add_argument('--nce_layers', type=str, default='0,4,8,12,16', help='compute NCE loss on which layers')
@@ -60,6 +60,7 @@ class CUTModel(BaseModel):
         # specify the training losses you want to print out.
         # The training/test scripts will call <BaseModel.get_current_losses>
         self.loss_names = ['G_GAN', 'D_real', 'D_fake', 'G', 'NCE', "COLOR", "INSTMEAN", "BGMEAN", "BGOVER", "FGUNDER"]
+        # self.loss_names = ['G_GAN', 'D_real', 'D_fake', 'G', 'NCE']
         self.visual_names = ['real_A', 'fake_B', 'real_B']
         self.nce_layers = [int(i) for i in self.opt.nce_layers.split(',')]
 
@@ -219,8 +220,8 @@ class CUTModel(BaseModel):
     def calculate_color_loss(self, src, tgt,
                             l_instance=1e1,
                             l_bg_mean=1e1,
-                            l_bg_bright = 1e-1,
-                            l_fg_dark = 1e0):
+                            l_bg_bright=1e-1,
+                            l_fg_dark=1e0):
         src_unique = torch.unique(src, sorted=True)
         if len(src_unique) > 1:
             thresh = (src_unique[0] + src_unique[1]) / 2
@@ -232,7 +233,7 @@ class CUTModel(BaseModel):
         dtype = tgt.dtype
 
         # If batched, we'll handle batch as single long vector but keep per-image separation
-        if tgt.dim() == 2:
+        if tgt.dim() == 3:
             B = 1
             src = src.unsqueeze(0)
             tgt = tgt.unsqueeze(0)

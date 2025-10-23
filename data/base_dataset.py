@@ -8,6 +8,9 @@ import torch.utils.data as data
 from PIL import Image
 import torchvision.transforms as transforms
 from abc import ABC, abstractmethod
+from torchvision.transforms import Lambda, Compose
+import torch.nn.functional as F
+import torch
 
 
 class BaseDataset(data.Dataset, ABC):
@@ -79,57 +82,62 @@ def get_params(opt, size):
     return {'crop_pos': (x, y), 'flip': flip}
 
 
-def get_transform(opt, params=None, grayscale=False, method=Image.BICUBIC, convert=True):
+def get_transform(opt, params=None, grayscale=False, convert=True):
     transform_list = []
-    if grayscale:
-        transform_list.append(transforms.Grayscale(1))
+
     if 'fixsize' in opt.preprocess:
-        transform_list.append(transforms.Resize(params["size"], method))
-    if 'resize' in opt.preprocess:
-        osize = [opt.load_size, opt.load_size]
-        if "gta2cityscapes" in opt.dataroot:
-            osize[0] = opt.load_size // 2
-        transform_list.append(transforms.Resize(osize, method))
+
+        transform_list.append(Lambda(lambda vol: __resize(vol, params["size"])))
+
+    # if 'resize' in opt.preprocess:
+    #     osize = [opt.load_size, opt.load_size, opt.load_size]
+    #     if "gta2cityscapes" in opt.dataroot:
+    #         osize[0] = opt.load_size // 2
+    #     transform_list.append(Lambda(lambda vol: __resize(vol, osize)))
+
     elif 'scale_width' in opt.preprocess:
-        transform_list.append(transforms.Lambda(lambda img: __scale_width(img, opt.load_size, opt.crop_size, method)))
+        transform_list.append(Lambda(lambda vol: __scale_width(vol, opt.load_size, opt.crop_size)))
+
     elif 'scale_shortside' in opt.preprocess:
-        transform_list.append(transforms.Lambda(lambda img: __scale_shortside(img, opt.load_size, opt.crop_size, method)))
+        transform_list.append(Lambda(lambda vol: __scale_shortside(vol, opt.load_size, opt.crop_size)))
 
     if 'zoom' in opt.preprocess:
         if params is None:
-            transform_list.append(transforms.Lambda(lambda img: __random_zoom(img, opt.load_size, opt.crop_size, method)))
+            transform_list.append(Lambda(lambda vol: __random_zoom(vol, opt.load_size, opt.crop_size)))
         else:
-            transform_list.append(transforms.Lambda(lambda img: __random_zoom(img, opt.load_size, opt.crop_size, method, factor=params["scale_factor"])))
+            transform_list.append(Lambda(lambda vol: __random_zoom(vol, opt.load_size, opt.crop_size, factor=params["scale_factor"])))
 
-    if 'crop' in opt.preprocess:
-        if params is None or 'crop_pos' not in params:
-            transform_list.append(transforms.RandomCrop(opt.crop_size))
-        else:
-            transform_list.append(transforms.Lambda(lambda img: __crop(img, params['crop_pos'], opt.crop_size)))
+    # if 'crop' in opt.preprocess:
+    #     if params is None or 'crop_pos' not in params:
+    #         transform_list.append(Lambda(lambda vol: __random_crop(vol, opt.crop_size)))
+    #     else:
+    #         transform_list.append(Lambda(lambda vol: __crop(vol, params['crop_pos'], opt.crop_size)))
 
     if 'patch' in opt.preprocess:
-        transform_list.append(transforms.Lambda(lambda img: __patch(img, params['patch_index'], opt.crop_size)))
+        transform_list.append(Lambda(lambda vol: __patch(vol, params['patch_index'], opt.crop_size)))
 
     if 'trim' in opt.preprocess:
-        transform_list.append(transforms.Lambda(lambda img: __trim(img, opt.crop_size)))
+        transform_list.append(Lambda(lambda vol: __trim(vol, opt.crop_size)))
 
-    # if opt.preprocess == 'none':
-    transform_list.append(transforms.Lambda(lambda img: __make_power_2(img, base=4, method=method)))
+    # transform_list.append(Lambda(lambda vol: __make_power_2(vol, base=4)))
 
-    if not opt.no_flip:
-        if params is None or 'flip' not in params:
-            transform_list.append(transforms.RandomHorizontalFlip())
-        elif 'flip' in params:
-            transform_list.append(transforms.Lambda(lambda img: __flip(img, params['flip'])))
+    # if not opt.no_flip:
+    #     if params is None or 'flip' not in params:
+    #         transform_list.append(Lambda(lambda vol: __random_flip(vol)))
+    #     else:
+    #         transform_list.append(Lambda(lambda vol: __flip(vol, params['flip'])))
 
     if convert:
-        transform_list += [transforms.ToTensor()]
+        transform_list.append(lambda vol: torch.from_numpy(vol))
+        # Normalize NumPy volume
         if grayscale:
-            transform_list += [transforms.Normalize((0.5,), (0.5,))]
+            transform_list.append(Lambda(lambda vol: (vol - 0.5) / 0.5))
         else:
-            transform_list += [transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]
-    return transforms.Compose(transform_list)
+            mean = np.array([0.5, 0.5, 0.5], dtype=np.float32)[:, None, None, None]
+            std = np.array([0.5, 0.5, 0.5], dtype=np.float32)[:, None, None, None]
+            transform_list.append(Lambda(lambda vol: (vol - mean) / std))
 
+    return Compose(transform_list)
 
 def __make_power_2(img, base, method=Image.BICUBIC):
     ow, oh = img.size
@@ -190,11 +198,11 @@ def __scale_width(img, target_width, crop_width, method=Image.BICUBIC):
 
 
 def __crop(img, pos, size):
-    ow, oh = img.size
-    x1, y1 = pos
-    tw = th = size
-    if (ow > tw or oh > th):
-        return img.crop((x1, y1, x1 + tw, y1 + th))
+    ow, oh, od = img.size
+    x1, y1, z1 = pos
+    tw = th = td = size
+    if (ow > tw or oh > th or od > td):
+        return img.crop((x1, y1, z1, x1 + tw, y1 + th, z1 + td))
     return img
 
 

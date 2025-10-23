@@ -2,6 +2,7 @@ import os.path
 from data.base_dataset import BaseDataset, get_transform
 from data.image_folder import make_dataset
 from PIL import Image
+from skimage import io as skio
 import random
 import util.util as util
 import numpy as np
@@ -56,21 +57,21 @@ class UnalignedDataset(BaseDataset):
         else:   # randomize the index for domain B to avoid fixed pairs.
             index_B = random.randint(0, self.B_size - 1)
         B_path = self.B_paths[index_B]
-        A_img = np.array(Image.open(A_path).convert('L'))
-        B_img = np.array(Image.open(B_path).convert('L'))
-        
-        A_img = Image.fromarray(np.clip(A_img, 0, np.max(B_img)).astype(np.uint8)).convert("RGB")
-        B_img = Image.fromarray(B_img).convert("RGB")
+        A_img = skio.imread(A_path).astype(np.float32) / 255
+        A_img = np.expand_dims(A_img, -1).transpose(3, 0, 1, 2)
+
+        B_img = skio.imread(B_path).astype(np.float32) / 255
+        B_img = np.expand_dims(B_img, -1).transpose(3, 0, 1, 2)
+
         # Apply image transformation
         # For CUT/FastCUT mode, if in finetuning phase (learning rate is decaying),
         # do not perform resize-crop data augmentation of CycleGAN.
         is_finetuning = self.opt.isTrain and self.current_epoch > self.opt.n_epochs
         modified_opt = util.copyconf(self.opt, load_size=self.opt.crop_size if is_finetuning else self.opt.load_size)
-        transform = get_transform(modified_opt, grayscale=True)
+        transform = get_transform(modified_opt, grayscale=1)
+        A = transform(A_img).float()
+        B = transform(B_img).float()
 
-        A = transform(A_img)
-        B = transform(B_img)    
-        
         return {'A': A, 'B': B, 'A_paths': A_path, 'B_paths': B_path}
 
     def __len__(self):

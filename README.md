@@ -1,9 +1,12 @@
-# GePPETTO-CUT
+# GePPETTO-CUT-3D
 
-This fork is the adaptation of the Contrastive Unpaired Translation to the GePPETTO-DET generative framework. We add:
+This fork is the adaptation of [GePPETTO-CUT](https://github.com/rb-sl/GePPETTO-CUT) to perform Texture Synthesis on 3D volumes. We add:
 - Custom data management for our application
 - A custom loss for texture conditioning
 - A connector for integrated usage of CUT into GePPETTO-DET
+- Custom networks to work over 3D volumes
+
+**Warning**: this is only a minimum working setup for [GePPETTO-DET]( \href{https://github.com/rb-sl/GePPETTO-DET}{https://github.com/rb-sl/GePPETTO-DET).
 
 ---
 ---

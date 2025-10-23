@@ -129,12 +129,12 @@ class Visualizer():
                 for label, image in visuals.items():
                     image_numpy = util.tensor2im(image)
                     label_html_row += '<td>%s</td>' % label
-                    images.append(image_numpy.transpose([2, 0, 1]))
+                    images.append(image_numpy.transpose([3, 0, 1, 2]))
                     idx += 1
                     if idx % ncols == 0:
                         label_html += '<tr>%s</tr>' % label_html_row
                         label_html_row = ''
-                white_image = np.ones_like(image_numpy.transpose([2, 0, 1])) * 255
+                white_image = np.ones_like(image_numpy.transpose([3, 0, 1, 2])) * 255
                 while idx % ncols != 0:
                     images.append(white_image)
                     label_html_row += '<td></td>'
@@ -142,7 +142,7 @@ class Visualizer():
                 if label_html_row != '':
                     label_html += '<tr>%s</tr>' % label_html_row
                 try:
-                    self.vis.images(images, ncols, 2, self.display_id + 1,
+                    self.vis.images(np.max(np.array(images), axis=3), ncols, 2, self.display_id + 1,
                                     None, dict(title=title + ' images'))
                     label_html = '<table>%s</table>' % label_html
                     self.vis.text(table_css + label_html, win=self.display_id + 2,
