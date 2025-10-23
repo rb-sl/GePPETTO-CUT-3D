@@ -6,7 +6,7 @@ This fork is the adaptation of [GePPETTO-CUT](https://github.com/rb-sl/GePPETTO-
 - A connector for integrated usage of CUT into GePPETTO-DET
 - Custom networks to work over 3D volumes
 
-**Warning**: this is only a minimum working setup for [GePPETTO-DET]( \href{https://github.com/rb-sl/GePPETTO-DET}{https://github.com/rb-sl/GePPETTO-DET).
+**Warning**: this is only a minimum working setup for [GePPETTO-DET](https://github.com/rb-sl/GePPETTO-DET).
 
 ---
 ---
