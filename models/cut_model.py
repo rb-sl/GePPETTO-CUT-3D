@@ -6,6 +6,10 @@ from .patchnce import PatchNCELoss
 import util.util as util
 import torch.nn.functional as F
 
+import torch.nn as nn
+import torch.nn.functional as F
+import math
+
 
 class CUTModel(BaseModel):
     """ This class implements CUT and FastCUT model, described in the paper
@@ -20,9 +24,9 @@ class CUTModel(BaseModel):
     def modify_commandline_options(parser, is_train=True):
         """  Configures options specific for CUT model
         """
-        parser.add_argument('--CUT_mode', type=str, default="CUT", choices='(CUT, cut, FastCUT, fastcut)')
+        parser.add_argument('--CUT_mode', type=str, default="CUT", choices=("CUT", "cut", "FastCUT", "fastcut"))
 
-        parser.add_argument('--lambda_GAN', type=float, default=1.0, help='weight for GAN loss：GAN(G(X))')
+        parser.add_argument('--lambda_GAN', type=float, default=1.0, help='weight for GAN loss: GAN(G(X))')
         parser.add_argument('--lambda_NCE', type=float, default=1.0, help='weight for NCE loss: NCE(G(X), X)')
         parser.add_argument('--nce_idt', type=util.str2bool, nargs='?', const=True, default=False, help='use NCE loss for identity mapping: NCE(G(Y), Y))')
         parser.add_argument('--nce_layers', type=str, default='0,4,8,12,16', help='compute NCE loss on which layers')
@@ -36,6 +40,9 @@ class CUTModel(BaseModel):
         parser.add_argument('--flip_equivariance',
                             type=util.str2bool, nargs='?', const=True, default=False,
                             help="Enforce flip-equivariance as additional regularization. It's used by FastCUT, but not CUT")
+
+        parser.add_argument('--discriminator', type=str, default="unconditional", choices=["unconditional", "conditional", "dual"], help='discriminator mode')
+        parser.add_argument('--use_sam_after', type=int, default=10, help='Activates the SAM loss computation after the given epoch')
 
         parser.set_defaults(pool_size=0)  # no image pooling
 
@@ -59,7 +66,7 @@ class CUTModel(BaseModel):
 
         # specify the training losses you want to print out.
         # The training/test scripts will call <BaseModel.get_current_losses>
-        self.loss_names = ['G_GAN', 'D_real', 'D_fake', 'G', 'NCE', "COLOR", "INSTMEAN", "BGMEAN", "BGOVER", "FGUNDER"]
+        self.loss_names = ['G_GAN', 'D_real', 'D_fake', 'G', 'NCE', "G_cond", "D_cond", "D_cond_real", "D_cond_fake"]
         # self.loss_names = ['G_GAN', 'D_real', 'D_fake', 'G', 'NCE']
         self.visual_names = ['real_A', 'fake_B', 'real_B']
         self.nce_layers = [int(i) for i in self.opt.nce_layers.split(',')]
@@ -69,7 +76,12 @@ class CUTModel(BaseModel):
             self.visual_names += ['idt_B']
 
         if self.isTrain:
-            self.model_names = ['G', 'F', 'D']
+            self.discriminator_mode = opt.discriminator
+            self.model_names = ['G', 'F']
+            if self.discriminator_mode in ["dual", "unconditional"]:
+                self.model_names.append('D')
+            if self.discriminator_mode in ["dual", "conditional"]:
+                self.model_names.append('D_cond')    
         else:  # during test time, only load G
             self.model_names = ['G']
 
@@ -78,7 +90,19 @@ class CUTModel(BaseModel):
         self.netF = networks.define_F(opt.input_nc, opt.netF, opt.normG, not opt.no_dropout, opt.init_type, opt.init_gain, opt.no_antialias, self.gpu_ids, opt)
 
         if self.isTrain:
-            self.netD = networks.define_D(opt.output_nc, opt.ndf, opt.netD, opt.n_layers_D, opt.normD, opt.init_type, opt.init_gain, opt.no_antialias, self.gpu_ids, opt)
+            if self.discriminator_mode in ["dual", "unconditional"]:
+                self.netD = networks.define_D(opt.output_nc, opt.ndf, opt.netD, opt.n_layers_D, opt.normD, opt.init_type, opt.init_gain, opt.no_antialias, self.gpu_ids, opt)
+                # self.print_receptive_field(self.netD, "Unconditional discriminator")
+            else:
+                self.netD = None
+                print("Unconditional discriminator not set")
+
+            if self.discriminator_mode in ["dual", "conditional"]:
+                cond_input_nc = opt.input_nc + opt.output_nc
+                self.netD_cond = networks.define_D(cond_input_nc, opt.ndf, opt.netD, opt.n_layers_D +1, opt.normD, opt.init_type, opt.init_gain, opt.no_antialias, self.gpu_ids, opt)
+                # self.print_receptive_field(self.netD_cond, "Conditional discriminator")
+
+            # self.netD = networks.define_D(opt.output_nc, opt.ndf, opt.netD, opt.n_layers_D, opt.normD, opt.init_type, opt.init_gain, opt.no_antialias, self.gpu_ids, opt)
 
             # define loss functions
             self.criterionGAN = networks.GANLoss(opt.gan_mode).to(self.device)
@@ -87,11 +111,20 @@ class CUTModel(BaseModel):
             for nce_layer in self.nce_layers:
                 self.criterionNCE.append(PatchNCELoss(opt).to(self.device))
 
+
             self.criterionIdt = torch.nn.L1Loss().to(self.device)
             self.optimizer_G = torch.optim.Adam(self.netG.parameters(), lr=opt.lr, betas=(opt.beta1, opt.beta2))
-            self.optimizer_D = torch.optim.Adam(self.netD.parameters(), lr=opt.lr, betas=(opt.beta1, opt.beta2))
+            # self.optimizer_D = torch.optim.Adam(self.netD.parameters(), lr=opt.lr, betas=(opt.beta1, opt.beta2))
             self.optimizers.append(self.optimizer_G)
-            self.optimizers.append(self.optimizer_D)
+            # self.optimizers.append(self.optimizer_D)
+
+            if self.discriminator_mode in ["dual", "unconditional"]:
+                self.optimizer_D = torch.optim.Adam(self.netD.parameters(), lr=opt.lr / 10, betas=(opt.beta1, opt.beta2))
+                self.optimizers.append(self.optimizer_D)
+
+            if self.discriminator_mode in ["dual", "conditional"]:
+                self.optimizer_D_cond = torch.optim.Adam(self.netD_cond.parameters(), lr=opt.lr / 10, betas=(opt.beta1, opt.beta2))
+                self.optimizers.append(self.optimizer_D_cond)
 
     def data_dependent_initialize(self, data):
         """
@@ -107,28 +140,45 @@ class CUTModel(BaseModel):
         self.forward()                     # compute fake images: G(A)
         if self.opt.isTrain:
             self.compute_D_loss().backward()                  # calculate gradients for D
-            self.compute_G_loss().backward()                   # calculate graidents for G
+            self.compute_G_loss(epoch=0).backward()                   # calculate graidents for G
             if self.opt.lambda_NCE > 0.0:
                 self.optimizer_F = torch.optim.Adam(self.netF.parameters(), lr=self.opt.lr, betas=(self.opt.beta1, self.opt.beta2))
                 self.optimizers.append(self.optimizer_F)
 
-    def optimize_parameters(self):
+    def optimize_parameters(self, epoch):
         # forward
         self.forward()
 
         # update D
-        self.set_requires_grad(self.netD, True)
-        self.optimizer_D.zero_grad()
-        self.loss_D = self.compute_D_loss()
-        self.loss_D.backward()
-        self.optimizer_D.step()
+        # self.set_requires_grad(self.netD, True)
+        # self.optimizer_D.zero_grad()
+        # self.loss_D = self.compute_D_loss()
+        # self.loss_D.backward()
+        # self.optimizer_D.step()
+        if self.discriminator_mode in ["dual", "unconditional"]:
+            self.set_requires_grad(self.netD, True)
+            self.optimizer_D.zero_grad()
+        if self.discriminator_mode in ["dual", "conditional"]:
+            self.set_requires_grad(self.netD_cond, True)
+            self.optimizer_D_cond.zero_grad()
+            
+        self.compute_D_loss().backward()
+
+        if self.discriminator_mode in ["dual", "unconditional"]:
+            self.optimizer_D.step()
+        if self.discriminator_mode in ["dual", "conditional"]:
+            self.optimizer_D_cond.step()
 
         # update G
-        self.set_requires_grad(self.netD, False)
+        # self.set_requires_grad(self.netD, False)
+        if self.discriminator_mode in ["dual", "unconditional"]:
+            self.set_requires_grad(self.netD, False)
+        if self.discriminator_mode in ["dual", "conditional"]:
+            self.set_requires_grad(self.netD_cond, False)
         self.optimizer_G.zero_grad()
         if self.opt.netF == 'mlp_sample':
             self.optimizer_F.zero_grad()
-        self.loss_G = self.compute_G_loss()
+        self.loss_G = self.compute_G_loss(epoch=epoch)
         self.loss_G.backward()
         self.optimizer_G.step()
         if self.opt.netF == 'mlp_sample':
@@ -143,6 +193,9 @@ class CUTModel(BaseModel):
         AtoB = self.opt.direction == 'AtoB'
         self.real_A = input['A' if AtoB else 'B'].to(self.device)
         self.real_B = input['B' if AtoB else 'A'].to(self.device)
+        if 'A_paired' in input.keys():
+            self.A_paired = input['A_paired'].to(self.device)
+            self.B_paired = input['B_paired'].to(self.device)
         self.image_paths = input['A_paths' if AtoB else 'B_paths']
 
     def forward(self):
@@ -158,26 +211,79 @@ class CUTModel(BaseModel):
         if self.opt.nce_idt:
             self.idt_B = self.fake[self.real_A.size(0):]
 
+    # def compute_D_loss(self):
+    #     """Calculate GAN loss for the discriminator"""
+    #     fake = self.fake_B.detach()
+    #     # Fake; stop backprop to the generator by detaching fake_B
+    #     pred_fake = self.netD(fake)
+    #     self.loss_D_fake = self.criterionGAN(pred_fake, False).mean()
+    #     # Real
+    #     self.pred_real = self.netD(self.real_B)
+    #     loss_D_real = self.criterionGAN(self.pred_real, True)
+    #     self.loss_D_real = loss_D_real.mean()
+
+    #     # combine loss and calculate gradients
+    #     self.loss_D = (self.loss_D_fake + self.loss_D_real) * 0.5
+    #     return self.loss_D
+
     def compute_D_loss(self):
         """Calculate GAN loss for the discriminator"""
         fake = self.fake_B.detach()
-        # Fake; stop backprop to the generator by detaching fake_B
-        pred_fake = self.netD(fake)
-        self.loss_D_fake = self.criterionGAN(pred_fake, False).mean()
-        # Real
-        self.pred_real = self.netD(self.real_B)
-        loss_D_real = self.criterionGAN(self.pred_real, True)
-        self.loss_D_real = loss_D_real.mean()
 
-        # combine loss and calculate gradients
-        self.loss_D = (self.loss_D_fake + self.loss_D_real) * 0.5
-        return self.loss_D
+        self.loss_D = 0
+        if self.discriminator_mode in ["dual", "unconditional"]:
+            # Fake; stop backprop to the generator by detaching fake_B
+            pred_fake = self.netD(fake)
+            self.loss_D_fake = self.criterionGAN(pred_fake, False).mean()
+            # Real
+            self.pred_real = self.netD(self.real_B)
+            loss_D_real = self.criterionGAN(self.pred_real, True)
+            self.loss_D_real = loss_D_real.mean()
 
-    def compute_G_loss(self):
+            # combine loss and calculate gradients
+            self.loss_D = (self.loss_D_fake + self.loss_D_real) * 0.5
+
+        self.loss_D_cond = 0.0
+        self.loss_D_cond_fake = 0.0
+        self.loss_D_cond_real = 0.0
+            
+        # Only compute this if paired data was provided in this batch
+        if hasattr(self, 'A_paired') and hasattr(self, 'B_paired'):
+            if self.discriminator_mode == "dual":
+                # Generate fake image from the PAIRED mask
+                fake_B_paired = self.netG(self.A_paired)                
+                # Concatenate Mask + Fake Image
+                fake_paired = torch.cat((self.A_paired, fake_B_paired), dim=1)
+                pred_fake_cond = self.netD_cond(fake_paired.detach())
+                self.loss_D_cond_fake = self.criterionGAN(pred_fake_cond, False).mean()
+
+                # Concatenate Mask + Real Image
+                real_AB = torch.cat((self.A_paired, self.B_paired), dim=1)
+                pred_real_cond = self.netD_cond(real_AB)
+                self.loss_D_cond_real = self.criterionGAN(pred_real_cond, True).mean()
+                
+                self.loss_D_cond = (self.loss_D_cond_fake + self.loss_D_cond_real) * 0.5
+            elif self.discriminator_mode == "conditional":
+                fake_AB = torch.cat((self.real_A, fake), dim=1)
+                pred_fake = self.netD_cond(fake_AB)
+
+                self.loss_D_cond_fake = self.criterionGAN(pred_fake, False).mean()
+                # Real
+                real_AB = torch.cat((self.A_paired, self.B_paired), dim=1)
+                self.pred_real = self.netD_cond(real_AB)
+                self.loss_D_cond_real = self.criterionGAN(self.pred_real, True)
+                self.loss_D_cond_real = loss_D_real.mean()
+
+                # combine loss and calculate gradients
+                self.loss_D_cond = (self.loss_D_cond_fake + self.loss_D_cond_real) * 0.5
+        
+        return self.loss_D + self.loss_D_cond
+
+    def compute_G_loss(self, epoch):
         """Calculate GAN and NCE loss for the generator"""
         fake = self.fake_B
         # First, G(A) should fake the discriminator
-        if self.opt.lambda_GAN > 0.0:
+        if self.opt.lambda_GAN > 0.0 and self.discriminator_mode in ["dual", "unconditional"]:
             pred_fake = self.netD(fake)
             self.loss_G_GAN = self.criterionGAN(pred_fake, True).mean() * self.opt.lambda_GAN
         else:
@@ -194,9 +300,22 @@ class CUTModel(BaseModel):
         else:
             loss_NCE_both = self.loss_NCE
 
-        self.loss_COLOR = self.calculate_color_loss(self.real_A, self.fake_B)
+        # self.loss_COLOR = self.calculate_color_loss(self.real_A, self.fake_B)
 
-        self.loss_G = self.loss_G_GAN + loss_NCE_both + self.loss_COLOR
+        # self.loss_GRADIENT = self.calculate_gradient_loss(self.real_A, self.fake_B)
+
+        # 2. Fool Conditional D (Structure)
+        self.loss_G_cond = 0.0
+        if hasattr(self, 'A_paired') and hasattr(self, 'B_paired') \
+              and self.discriminator_mode in ["dual", "conditional"]:
+            fake_B_paired = self.netG(self.A_paired)
+            fake_AB = torch.cat((self.A_paired, fake_B_paired), dim=1)
+            
+            lambda_cond = 5 # if epoch < 50 else 20  #self.opt.lambda_GAN if not "dual" else 5
+            self.loss_G_cond = self.criterionGAN(self.netD_cond(fake_AB), True).mean() * lambda_cond
+
+
+        self.loss_G = self.loss_G_GAN + loss_NCE_both + self.loss_G_cond
         return self.loss_G
 
     def calculate_NCE_loss(self, src, tgt):
@@ -216,12 +335,12 @@ class CUTModel(BaseModel):
             total_nce_loss += loss.mean()
 
         return total_nce_loss / n_layers
-    
+
     def calculate_color_loss(self, src, tgt,
                             l_instance=1e1,
                             l_bg_mean=1e1,
-                            l_bg_bright=1e-1,
-                            l_fg_dark=1e0):
+                            l_bg_bright=0,
+                            l_fg_dark=0):
         src_unique = torch.unique(src, sorted=True)
         if len(src_unique) > 1:
             thresh = (src_unique[0] + src_unique[1]) / 2
@@ -306,11 +425,11 @@ class CUTModel(BaseModel):
 
             # Foreground under-threshold penalty
             if mask_ids.numel() > 0:
-                t_fg = t[nonbg_mask]
-                fg_under = F.relu(thresh - t_fg)
-                fg_under_loss = (fg_under ** 2).sum()
+               t_fg = t[nonbg_mask]
+               fg_under = F.relu(thresh - t_fg)
+               fg_under_loss = (fg_under ** 2).sum()
             else:
-                fg_under_loss = torch.tensor(0.0, device=device, dtype=dtype)
+               fg_under_loss = torch.tensor(0.0, device=device, dtype=dtype)
 
             # Accumulate
             total_bg_bright_loss += bg_over_loss
@@ -330,3 +449,27 @@ class CUTModel(BaseModel):
         )
 
         return total_loss
+    
+    def calculate_gradient_loss(self, mask, generated_image):
+        # 1. Blur both inputs to ignore high-freq texture and focus on "blobs"
+        # Note: Detach mask smoothing if mask is fixed, but it's cheap operation
+        mask_smooth = self.smoother(mask)
+        gen_smooth = self.smoother(generated_image)
+        
+        # 2. Calculate Gradients on SMOOTHED versions
+        def get_gradients(x):
+            # dz, dy, dx
+            dz = torch.abs(x[:, :, 1:, :, :] - x[:, :, :-1, :, :])
+            dy = torch.abs(x[:, :, :, 1:, :] - x[:, :, :, :-1, :])
+            dx = torch.abs(x[:, :, :, :, 1:] - x[:, :, :, :, :-1])
+            return dz, dy, dx
+
+        m_dz, m_dy, m_dx = get_gradients(mask_smooth)
+        g_dz, g_dy, g_dx = get_gradients(gen_smooth)
+        
+        # 3. L1 Loss between the gradient maps
+        loss = F.l1_loss(g_dz, m_dz) + F.l1_loss(g_dy, m_dy) + F.l1_loss(g_dx, m_dx)
+        return loss
+
+
+

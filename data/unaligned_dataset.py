@@ -57,11 +57,12 @@ class UnalignedDataset(BaseDataset):
         else:   # randomize the index for domain B to avoid fixed pairs.
             index_B = random.randint(0, self.B_size - 1)
         B_path = self.B_paths[index_B]
-        A_img = skio.imread(A_path).astype(np.float32) / 255
+        A_img = skio.imread(A_path).astype(np.uint8)
         A_img = np.expand_dims(A_img, -1).transpose(3, 0, 1, 2)
 
-        B_img = skio.imread(B_path).astype(np.float32) / 255
+        B_img = skio.imread(B_path).astype(np.uint8)
         B_img = np.expand_dims(B_img, -1).transpose(3, 0, 1, 2)
+        A_img = np.clip(A_img, 0, np.max(B_img)).astype(np.uint8)
 
         # Apply image transformation
         # For CUT/FastCUT mode, if in finetuning phase (learning rate is decaying),

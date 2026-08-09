@@ -46,7 +46,7 @@ class Downsample(nn.Module):
         self.pad_sizes = [int(1. * (filt_size - 1) / 2), int(np.ceil(1. * (filt_size - 1) / 2)), int(1. * (filt_size - 1) / 2), int(np.ceil(1. * (filt_size - 1) / 2)), int(1. * (filt_size - 1) / 2), int(np.ceil(1. * (filt_size - 1) / 2))]
         self.pad_sizes = [pad_size + pad_off for pad_size in self.pad_sizes]
         self.stride = stride
-        self.off = int((self.stride - 1) / 2.)
+        self.off = int((self.stride - 1) / 2.) if isinstance(stride, int) else int((max(self.stride) - 1) / 2.)
         self.channels = channels
 
         filt = get_filter(filt_size=self.filt_size)
@@ -81,17 +81,18 @@ class Upsample(nn.Module):
         self.filt_odd = np.mod(filt_size, 2) == 1
         self.pad_size = int((filt_size - 1) / 2)
         self.stride = stride
-        self.off = int((self.stride - 1) / 2.)
+        self.off = int((self.stride - 1) / 2.) if isinstance(self.stride, int) else int((max(self.stride) - 1) / 2.)
         self.channels = channels
 
-        filt = get_filter(filt_size=self.filt_size) * (stride**2)
+        filt = get_filter(filt_size=self.filt_size) #* (stride**2)
         self.register_buffer('filt', filt[None, None, :, :, :].repeat((self.channels, 1, 1, 1, 1)))
 
         self.pad = get_pad_layer(pad_type)([1, 1, 1, 1, 1, 1])
 
     def forward(self, inp):
-        ret_val = F.conv_transpose3d(self.pad(inp), self.filt, stride=self.stride, padding=1 + self.pad_size, 
-                                     groups=inp.shape[1])[:, :, 1:, 1:, 1:]
+        x_int = F.interpolate(inp, scale_factor=self.stride, mode='nearest', ) # align_corners=False
+        x = F.conv3d(self.pad(x_int), self.filt, groups=inp.shape[1], padding=self.pad_size)
+        ret_val = x
         if(self.filt_odd):
             return ret_val
         else:
@@ -952,14 +953,14 @@ class ResnetGenerator(nn.Module):
         for i in range(n_downsampling):  # add downsampling layers
             mult = 2 ** i
             if(no_antialias):
-                model += [nn.Conv3d(ngf * mult, ngf * mult * 2, kernel_size=3, stride=2, padding=1, bias=use_bias),
+                model += [nn.Conv3d(ngf * mult, ngf * mult * 2, kernel_size=(3, 3, 1), padding=(1, 1, 0), bias=use_bias),
                           norm_layer(ngf * mult * 2),
                           nn.ReLU(True)]
             else:
-                model += [nn.Conv3d(ngf * mult, ngf * mult * 2, kernel_size=3, stride=1, padding=1, bias=use_bias),
+                model += [nn.Conv3d(ngf * mult, ngf * mult * 2, kernel_size=(3, 3, 1), padding=(1, 1, 0), bias=use_bias),
                           norm_layer(ngf * mult * 2),
                           nn.ReLU(True),
-                          Downsample(ngf * mult * 2)]
+                          Downsample(ngf * mult * 2, stride=(2, 2, 1))]
 
         mult = 2 ** n_downsampling
         for i in range(n_blocks):       # add ResNet blocks
@@ -969,17 +970,23 @@ class ResnetGenerator(nn.Module):
         for i in range(n_downsampling):  # add upsampling layers
             mult = 2 ** (n_downsampling - i)
             if no_antialias_up:
-                model += [nn.ConvTranspose3d(ngf * mult, int(ngf * mult / 2),
-                                             kernel_size=3, stride=2,
-                                             padding=1, output_padding=1,
-                                             bias=use_bias),
+                # model += [nn.ConvTranspose3d(ngf * mult, int(ngf * mult / 2),
+                #                              kernel_size=3, stride=2,
+                #                              padding=1, output_padding=1,
+                #                              bias=use_bias),
+                #           norm_layer(int(ngf * mult / 2)),
+                #           nn.ReLU(True)]
+                model += [nn.Sequential(
+                                nn.Upsample(scale_factor=(2, 2, 1), mode='nearest',),  # was trilinear align_corners=False
+                                nn.Conv3d(ngf * mult, int(ngf * mult / 2), kernel_size=(3, 3, 1), padding=(1, 1, 0), bias=use_bias)
+                            ),
                           norm_layer(int(ngf * mult / 2)),
                           nn.ReLU(True)]
             else:
-                model += [Upsample(ngf * mult),
+                model += [Upsample(ngf * mult, stride=(2, 2, 1)),
                           nn.Conv3d(ngf * mult, int(ngf * mult / 2),
-                                    kernel_size=3, stride=1,
-                                    padding=1,  # output_padding=1,
+                                    kernel_size=(3, 3, 1), padding=(1, 1, 0),
+                                      # output_padding=1,
                                     bias=use_bias),
                           norm_layer(int(ngf * mult / 2)),
                           nn.ReLU(True)]
@@ -1046,17 +1053,21 @@ class ResnetDecoder(nn.Module):
         for i in range(n_downsampling):  # add upsampling layers
             mult = 2 ** (n_downsampling - i)
             if(no_antialias):
-                model += [nn.ConvTranspose3d(ngf * mult, int(ngf * mult / 2),
-                                             kernel_size=3, stride=2,
-                                             padding=1, output_padding=1,
-                                             bias=use_bias),
+                model += [
+                    # nn.ConvTranspose3d(ngf * mult, int(ngf * mult / 2),
+                    #                          kernel_size=3, stride=2,
+                    #                          padding=1, output_padding=1,
+                    #                          bias=use_bias),
+                          nn.Sequential(
+                                nn.Upsample(scale_factor=(2, 2, 1), mode='nearest', ), # align_corners=False
+                                nn.Conv3d(ngf * mult, int(ngf * mult / 2), kernel_size=(3, 3, 1), padding=(1, 1, 0), bias=use_bias)
+                            ),
                           norm_layer(int(ngf * mult / 2)),
                           nn.ReLU(True)]
             else:
-                model += [Upsample(ngf * mult),
+                model += [Upsample(ngf * mult, stride=(2, 2, 1)),
                           nn.Conv3d(ngf * mult, int(ngf * mult / 2),
-                                    kernel_size=3, stride=1,
-                                    padding=1,
+                                    kernel_size=(3, 3, 1), padding=(1, 1, 0),
                                     bias=use_bias),
                           norm_layer(int(ngf * mult / 2)),
                           nn.ReLU(True)]
@@ -1103,14 +1114,14 @@ class ResnetEncoder(nn.Module):
         for i in range(n_downsampling):  # add downsampling layers
             mult = 2 ** i
             if(no_antialias):
-                model += [nn.Conv3d(ngf * mult, ngf * mult * 2, kernel_size=3, stride=2, padding=1, bias=use_bias),
+                model += [nn.Conv3d(ngf * mult, ngf * mult * 2, kernel_size=(3, 3, 1), padding=(1, 1, 0), bias=use_bias),
                           norm_layer(ngf * mult * 2),
                           nn.ReLU(True)]
             else:
-                model += [nn.Conv3d(ngf * mult, ngf * mult * 2, kernel_size=3, stride=1, padding=1, bias=use_bias),
+                model += [nn.Conv3d(ngf * mult, ngf * mult * 2, kernel_size=(3, 3, 1), padding=(1, 1, 0), bias=use_bias),
                           norm_layer(ngf * mult * 2),
                           nn.ReLU(True),
-                          Downsample(ngf * mult * 2)]
+                          Downsample(ngf * mult * 2, stride=(2, 2, 1))]
 
         mult = 2 ** n_downsampling
         for i in range(n_blocks):       # add ResNet blocks
@@ -1252,23 +1263,35 @@ class UnetSkipConnectionBlock(nn.Module):
         upnorm = norm_layer(outer_nc)
 
         if outermost:
-            upconv = nn.ConvTranspose3d(inner_nc * 2, outer_nc,
-                                        kernel_size=4, stride=2,
-                                        padding=1)
+            # upconv = nn.ConvTranspose3d(inner_nc * 2, outer_nc,
+            #                             kernel_size=4, stride=2,
+            #                             padding=1)
+            upconv = nn.Sequential(
+                                nn.Upsample(scale_factor=(2, 2, 1), mode='nearest', ), # align_corners=False
+                                nn.Conv3d(inner_nc * 2, outer_nc, kernel_size=(3, 3, 1), padding=(1, 1, 0), bias=use_bias)
+                            ),
             down = [downconv]
             up = [uprelu, upconv, nn.Tanh()]
             model = down + [submodule] + up
         elif innermost:
-            upconv = nn.ConvTranspose3d(inner_nc, outer_nc,
-                                        kernel_size=4, stride=2,
-                                        padding=1, bias=use_bias)
+            # upconv = nn.ConvTranspose3d(inner_nc, outer_nc,
+            #                             kernel_size=4, stride=2,
+            #                             padding=1, bias=use_bias)
+            upconv = nn.Sequential(
+                                nn.Upsample(scale_factor=(2, 2, 1), mode='nearest',), # align_corners=False
+                                nn.Conv3d(inner_nc, outer_nc, kernel_size=(3, 3, 1), padding=(1, 1, 0), bias=use_bias)
+                            ),
             down = [downrelu, downconv]
             up = [uprelu, upconv, upnorm]
             model = down + up
         else:
-            upconv = nn.ConvTranspose3d(inner_nc * 2, outer_nc,
-                                        kernel_size=4, stride=2,
-                                        padding=1, bias=use_bias)
+            # upconv = nn.ConvTranspose3d(inner_nc * 2, outer_nc,
+            #                             kernel_size=4, stride=2,
+            #                             padding=1, bias=use_bias)
+            upconv = nn.Sequential(
+                                nn.Upsample(scale_factor=(2, 2, 1), mode='nearest', ), # align_corners=False
+                                nn.Conv3d(inner_nc * 2, outer_nc, kernel_size=(3, 3, 1), padding=(1, 1, 0), bias=use_bias)
+                            ),
             down = [downrelu, downconv, downnorm]
             up = [uprelu, upconv, upnorm]
 
@@ -1308,9 +1331,9 @@ class NLayerDiscriminator(nn.Module):
         kw_channel = 2
         padw = 1
         if(no_antialias):
-            sequence = [nn.Conv3d(input_nc, ndf, kernel_size=(kw, kw, kw_channel), stride=2, padding=padw), nn.LeakyReLU(0.2, True)]
+            sequence = [nn.Conv3d(input_nc, ndf, kernel_size=(kw, kw, kw), stride=(2, 2, 1), padding=padw), nn.LeakyReLU(0.2, True)]
         else:
-            sequence = [nn.Conv3d(input_nc, ndf, kernel_size=(kw, kw, kw_channel), stride=1, padding=padw), nn.LeakyReLU(0.2, True), Downsample(ndf)]
+            sequence = [nn.Conv3d(input_nc, ndf, kernel_size=(kw, kw, kw), stride=1, padding=padw), nn.LeakyReLU(0.2, True), Downsample(ndf, stride=(2, 2, 1))]
         nf_mult = 1
         nf_mult_prev = 1
         for n in range(1, n_layers):  # gradually increase the number of filters
@@ -1318,26 +1341,26 @@ class NLayerDiscriminator(nn.Module):
             nf_mult = min(2 ** n, 8)
             if(no_antialias):
                 sequence += [
-                    nn.Conv3d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=(kw, kw, kw_channel), stride=2, padding=padw, bias=use_bias),
+                    nn.Conv3d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=(kw, kw, kw), stride=(2, 2, 1), padding=padw, bias=use_bias),
                     norm_layer(ndf * nf_mult),
                     nn.LeakyReLU(0.2, True)
                 ]
             else:
                 sequence += [
-                    nn.Conv3d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=(kw, kw, kw_channel), stride=1, padding=padw, bias=use_bias),
+                    nn.Conv3d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=(kw, kw, kw), stride=1, padding=padw, bias=use_bias),
                     norm_layer(ndf * nf_mult),
                     nn.LeakyReLU(0.2, True),
-                    Downsample(ndf * nf_mult)]
+                    Downsample(ndf * nf_mult, stride=(2, 2, 1))]
 
         nf_mult_prev = nf_mult
         nf_mult = min(2 ** n_layers, 8)
         sequence += [
-            nn.Conv3d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=(kw, kw, kw_channel), stride=1, padding=padw, bias=use_bias),
+            nn.Conv3d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=(kw, kw, kw), stride=1, padding=padw, bias=use_bias),
             norm_layer(ndf * nf_mult),
             nn.LeakyReLU(0.2, True)
         ]
 
-        sequence += [nn.Conv3d(ndf * nf_mult, 1, kernel_size=(kw, kw, kw_channel), stride=1, padding=padw)]  # output 1 channel prediction map
+        sequence += [nn.Conv3d(ndf * nf_mult, 1, kernel_size=(kw, kw, kw), stride=1, padding=padw)]  # output 1 channel prediction map
         self.model = nn.Sequential(*sequence)
 
     def forward(self, input):

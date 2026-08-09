@@ -5,6 +5,7 @@ from data import create_dataset
 from models import create_model
 from util.visualizer import Visualizer
 
+# torch.backends.cudnn.benchmark = True
 
 if __name__ == '__main__':
     opt = TrainOptions().parse()   # get training options
@@ -21,11 +22,19 @@ if __name__ == '__main__':
     optimize_time = 0.1
 
     times = []
+    # with torch.profiler.profile(
+    #             activities=[
+    #                 torch.profiler.ProfilerActivity.CPU,
+    #                 torch.profiler.ProfilerActivity.CUDA,
+    #             ],
+    #             schedule=torch.profiler.schedule(wait=0, warmup=0, active=3, repeat=1),
+    #             on_trace_ready=torch.profiler.tensorboard_trace_handler('./logs/profiler_results'),
+    #         ) as prof:
     for epoch in range(opt.epoch_count, opt.n_epochs + opt.n_epochs_decay + 1):    # outer loop for different epochs; we save the model by <epoch_count>, <epoch_count>+<save_latest_freq>
         epoch_start_time = time.time()  # timer for entire epoch
         iter_data_time = time.time()    # timer for data loading per iteration
         epoch_iter = 0                  # the number of training iterations in current epoch, reset to 0 every epoch
-        visualizer.reset()              # reset the visualizer: make sure it saves the results to HTML at least once every epoch
+        # visualizer.reset()              # reset the visualizer: make sure it saves the results to HTML at least once every epoch
 
         dataset.set_epoch(epoch)
         for i, data in enumerate(dataset):  # inner loop within one epoch
@@ -44,15 +53,16 @@ if __name__ == '__main__':
                 model.setup(opt)               # regular setup: load and print networks; create schedulers
                 model.parallelize()
             model.set_input(data)  # unpack data from dataset and apply preprocessing
-            model.optimize_parameters()   # calculate loss functions, get gradients, update network weights
+            with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                model.optimize_parameters(epoch=epoch)   # calculate loss functions, get gradients, update network weights
             if len(opt.gpu_ids) > 0:
                 torch.cuda.synchronize()
             optimize_time = (time.time() - optimize_start_time) / batch_size * 0.005 + 0.995 * optimize_time
 
-            if total_iters % opt.display_freq == 0:   # display images on visdom and save images to a HTML file
-                save_result = total_iters % opt.update_html_freq == 0
-                model.compute_visuals()
-                visualizer.display_current_results(model.get_current_visuals(), epoch, save_result)
+            # if total_iters % opt.display_freq == 0:   # display images on visdom and save images to a HTML file
+            #     save_result = total_iters % opt.update_html_freq == 0
+            #     model.compute_visuals()
+            #     visualizer.display_current_results(model.get_current_visuals(), epoch, save_result)
 
             if total_iters % opt.print_freq == 0:    # print training losses and save logging information to the disk
                 losses = model.get_current_losses()
@@ -67,6 +77,16 @@ if __name__ == '__main__':
                 model.save_networks(save_suffix)
 
             iter_data_time = time.time()
+        #     prof.step()
+
+        # try:
+        #     with open("./logs/profile.txt", "a") as f:
+        #         f.write(f"Epoch {epoch}\n")
+        #         f.write(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
+        #         f.write("\n\n")
+        # except Exception as e:
+        #     print("Write exception: ", e)
+        #     pass
 
         if epoch % opt.save_epoch_freq == 0:              # cache our model every <save_epoch_freq> epochs
             print('saving the model at the end of epoch %d, iters %d' % (epoch, total_iters))
@@ -75,3 +95,5 @@ if __name__ == '__main__':
 
         print('End of epoch %d / %d \t Time Taken: %d sec' % (epoch, opt.n_epochs + opt.n_epochs_decay, time.time() - epoch_start_time))
         model.update_learning_rate()                     # update learning rates at the end of every epoch.
+
+            

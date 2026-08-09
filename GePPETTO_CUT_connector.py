@@ -8,6 +8,7 @@ from models import create_model
 from skimage import io as skio
 from pathlib import Path
 import numpy as np
+import shutil
 
 
 class GePPETTOOptions(TestOptions):
@@ -18,7 +19,6 @@ class GePPETTOOptions(TestOptions):
         parser.add_argument('--real_images_dir', type=str, default='./real_images/', help='Real images path.')
         parser.add_argument('--example_dir', type=str, default=None, help='Path for examples.')
         parser.add_argument('--output_dir', type=str, default='./outputs/', help='Dataset output path for images.')
-        
         return parser
 
 
@@ -92,7 +92,7 @@ if __name__ == '__main__':
                 skio.imsave(example_dir / f"{image_id}_{image_name}.tif", extract_image(image))
             show_example = False
         
-        skio.imsave(output_dir / f"image_{image_id}_{i}.tif", extract_image(visuals["fake_B"]))
+        skio.imsave(output_dir / Path(data["A_paths"][0]).name, extract_image(visuals["fake_B"]))
 
     # fake_cache_trainA.unlink()
     # shutil.rmtree(cache_dir_A)
