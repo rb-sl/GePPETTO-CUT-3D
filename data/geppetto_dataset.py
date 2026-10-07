@@ -78,6 +78,8 @@ class GeppettoDataset(UnalignedDataset):
 
         # Semi-paired GT
         i_paired = np.random.randint(len(self.paired_A_paths))
+        # assert self.paired_A_paths[i_paired].stem == self.paired_B_paths[i_paired].stem, \
+        #     f"paired masks and images do not correspond {self.paired_A_paths[i_paired].stem} {self.paired_B_paths[i_paired].stem}"
         A_paired = skio.imread(self.paired_A_paths[i_paired]).astype(np.uint8)
         A_paired = np.expand_dims(A_paired, (0, 1)) #.transpose(3, 0, 1, 2)
         
@@ -222,85 +224,111 @@ class GeppettoDataset(UnalignedDataset):
         return img_aug_1
 
 
-    def synchronized_3d_augment(self, vol_A, vol_B=None, is_mask_A=False, is_mask_B=False, aug=True):
-        """
-        Applies true 3D affine transformations (Rotation, Translation, Scale, Flips).
-        vol_A must be [1, C, Z, H, W]
-        """
-        vol_A = torch.from_numpy(vol_A.astype(np.float32))
-        if vol_B is not None:
-            vol_B = torch.from_numpy(vol_B.astype(np.float32))
+    # def synchronized_3d_augment(self, vol_A, vol_B=None, is_mask_A=False, is_mask_B=False, aug=True):
+    #     """
+    #     Applies true 3D affine transformations (Rotation, Translation, Scale, Flips).
+    #     vol_A must be [1, C, Z, H, W]
+    #     """
+    #     vol_A = torch.from_numpy(vol_A.astype(np.float32))
+    #     if vol_B is not None:
+    #         vol_B = torch.from_numpy(vol_B.astype(np.float32))
     
-        if aug:
-            device = vol_A.device
-            B, C, Z, H, W = vol_A.shape
+    #     if aug:
+    #         device = vol_A.device
+    #         B, C, Z, H, W = vol_A.shape
             
-            # ==========================================
-            # 1. Generate Geometric Parameters
-            # ==========================================
-            angle_rad = math.radians(random.uniform(0.0, 360.0))
-            cos_a = math.cos(angle_rad)
-            sin_a = math.sin(angle_rad)
+    #         # ==========================================
+    #         # 1. Generate Geometric Parameters
+    #         # ==========================================
+    #         angle_rad = math.radians(random.uniform(0.0, 360.0))
+    #         cos_a = math.cos(angle_rad)
+    #         sin_a = math.sin(angle_rad)
             
-            tx = random.uniform(-0.2, 0.2)
-            ty = random.uniform(-0.2, 0.2)
-            tz = random.uniform(-0.1, 0.1) 
+    #         tx = random.uniform(-0.2, 0.2)
+    #         ty = random.uniform(-0.2, 0.2)
+    #         tz = random.uniform(-0.1, 0.1) 
             
-            s = random.uniform(0.9, 1.1)
+    #         s = random.uniform(0.9, 1.1)
             
-            # Random Flips (-1 or 1)
-            flip_x = random.choice([-1.0, 1.0])
-            flip_y = random.choice([-1.0, 1.0])
-            flip_z = random.choice([-1.0, 1.0])
+    #         # Random Flips (-1 or 1)
+    #         flip_x = random.choice([-1.0, 1.0])
+    #         flip_y = random.choice([-1.0, 1.0])
+    #         flip_z = random.choice([-1.0, 1.0])
 
-            # Multiply scale by flip to embed the flip directly into the matrix
-            sx = s * flip_x
-            sy = s * flip_y
-            sz = 1.0 * flip_z # Z is not scaled, only flipped
+    #         # Multiply scale by flip to embed the flip directly into the matrix
+    #         sx = s * flip_x
+    #         sy = s * flip_y
+    #         sz = 1.0 * flip_z # Z is not scaled, only flipped
 
-            # ==========================================
-            # 2. Build the 3D Affine Matrix
-            # ==========================================
-            theta = torch.tensor([
-                [sx * cos_a, -sy * sin_a,  0.0,  tx],
-                [sx * sin_a,  sy * cos_a,  0.0,  ty],
-                [       0.0,         0.0,   sz,  tz]  
-            ], dtype=torch.float32, device=device).unsqueeze(0) 
+    #         # ==========================================
+    #         # 2. Build the 3D Affine Matrix
+    #         # ==========================================
+    #         theta = torch.tensor([
+    #             [sx * cos_a, -sy * sin_a,  0.0,  tx],
+    #             [sx * sin_a,  sy * cos_a,  0.0,  ty],
+    #             [       0.0,         0.0,   sz,  tz]  
+    #         ], dtype=torch.float32, device=device).unsqueeze(0) 
 
-            grid = F.affine_grid(theta, size=(B, C, Z, H, W), align_corners=False)
+    #         grid = F.affine_grid(theta, size=(B, C, Z, H, W), align_corners=False)
 
-            # ==========================================
-            # 3. Apply Geometric Transforms
-            # ==========================================
-            mode_A = 'nearest' if is_mask_A else 'bilinear'
-            aug_A = F.grid_sample(vol_A, grid, mode=mode_A, padding_mode='reflection', align_corners=False)
+    #         # ==========================================
+    #         # 3. Apply Geometric Transforms
+    #         # ==========================================
+    #         mode_A = 'nearest' if is_mask_A else 'bilinear'
+    #         aug_A = F.grid_sample(vol_A, grid, mode=mode_A, padding_mode='reflection', align_corners=False)
             
-            if vol_B is not None:
-                mode_B = 'nearest' if is_mask_B else 'bilinear'
-                aug_B = F.grid_sample(vol_B, grid, mode=mode_B, padding_mode='reflection', align_corners=False)
+    #         if vol_B is not None:
+    #             mode_B = 'nearest' if is_mask_B else 'bilinear'
+    #             aug_B = F.grid_sample(vol_B, grid, mode=mode_B, padding_mode='reflection', align_corners=False)
                 
-                # ==========================================
-                # 4. Apply Photometric Transforms (Images ONLY)
-                # ==========================================
-                aug_A, aug_B = self.random_photometric_distort_3d(aug_A, aug_B)
-            else:
-                aug_A = self.random_photometric_distort_3d(aug_A)
-        else:
-            aug_A = vol_A
-            aug_B = vol_B
+    #             # ==========================================
+    #             # 4. Apply Photometric Transforms (Images ONLY)
+    #             # ==========================================
+    #             aug_A, aug_B = self.random_photometric_distort_3d(aug_A, aug_B)
+    #         else:
+    #             aug_A = self.random_photometric_distort_3d(aug_A)
+    #     else:
+    #         aug_A = vol_A
+    #         aug_B = vol_B
         
-        # Normalize NumPy volume
-        # if grayscale:
-        aug_A = (aug_A / 255. - 0.5) / 0.5
-        # else:
-        #     mean = np.array([0.5, 0.5, 0.5], dtype=np.float32)[:, None, None, None]
-        #     std = np.array([0.5, 0.5, 0.5], dtype=np.float32)[:, None, None, None]
-        #     transform_list.append(transforms.Lambda(lambda vol: (vol - mean) / std))
-        if vol_B is not None:
-            # aug_B = torch.from_numpy(aug_A.astype(np.float32))
-            # Normalize NumPy volume
-            # if grayscale:
-            aug_B = (aug_B / 255. - 0.5) / 0.5
+    #     # Normalize NumPy volume
+    #     # if grayscale:
+    #     aug_A = (aug_A / 255. - 0.5) / 0.5
+    #     # else:
+    #     #     mean = np.array([0.5, 0.5, 0.5], dtype=np.float32)[:, None, None, None]
+    #     #     std = np.array([0.5, 0.5, 0.5], dtype=np.float32)[:, None, None, None]
+    #     #     transform_list.append(transforms.Lambda(lambda vol: (vol - mean) / std))
+    #     if vol_B is not None:
+    #         # aug_B = torch.from_numpy(aug_A.astype(np.float32))
+    #         # Normalize NumPy volume
+    #         # if grayscale:
+    #         aug_B = (aug_B / 255. - 0.5) / 0.5
             
-            return aug_A[0], aug_B[0]
-        return aug_A[0]
+    #         return aug_A[0], aug_B[0]
+    #     return aug_A[0]
+
+    def synchronized_3d_augment(self, vol_A, vol_B=None, is_mask_A=False, is_mask_B=False, aug=True):
+        """vol_* : numpy [1, C, H, W, Z]. Same geometric transform for A and B."""
+        vol_A = torch.from_numpy(vol_A.astype(np.float32))
+        vol_B = torch.from_numpy(vol_B.astype(np.float32)) if vol_B is not None else None
+
+        if aug:
+            k = random.randint(0, 3)
+            fh, fz = random.random() < 0.5, random.random() < 0.5
+            def geo(v):
+                v = torch.rot90(v, k, dims=(2, 3))      # rotate in the H-W plane only
+                if fh: v = v.flip(2)
+                if fz: v = v.flip(4)
+                return v
+            vol_A = geo(vol_A)
+            if vol_B is not None:
+                vol_B = geo(vol_B)
+                vol_A, vol_B = self.random_photometric_distort_3d(vol_A, vol_B)
+            else:
+                vol_A = self.random_photometric_distort_3d(vol_A)
+
+        vol_A = (vol_A.clamp(0, 255) / 255. - 0.5) / 0.5
+        if vol_B is not None:
+            vol_B = (vol_B.clamp(0, 255) / 255. - 0.5) / 0.5
+            return vol_A[0], vol_B[0]
+        return vol_A[0]

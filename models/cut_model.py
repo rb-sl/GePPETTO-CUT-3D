@@ -99,7 +99,7 @@ class CUTModel(BaseModel):
 
             if self.discriminator_mode in ["dual", "conditional"]:
                 cond_input_nc = opt.input_nc + opt.output_nc
-                self.netD_cond = networks.define_D(cond_input_nc, opt.ndf, opt.netD, opt.n_layers_D +1, opt.normD, opt.init_type, opt.init_gain, opt.no_antialias, self.gpu_ids, opt)
+                self.netD_cond = networks.define_D(cond_input_nc, opt.ndf, opt.netD, opt.n_layers_D , opt.normD, opt.init_type, opt.init_gain, opt.no_antialias, self.gpu_ids, opt) # +1
                 # self.print_receptive_field(self.netD_cond, "Conditional discriminator")
 
             # self.netD = networks.define_D(opt.output_nc, opt.ndf, opt.netD, opt.n_layers_D, opt.normD, opt.init_type, opt.init_gain, opt.no_antialias, self.gpu_ids, opt)
@@ -119,11 +119,11 @@ class CUTModel(BaseModel):
             # self.optimizers.append(self.optimizer_D)
 
             if self.discriminator_mode in ["dual", "unconditional"]:
-                self.optimizer_D = torch.optim.Adam(self.netD.parameters(), lr=opt.lr / 10, betas=(opt.beta1, opt.beta2))
+                self.optimizer_D = torch.optim.Adam(self.netD.parameters(), lr=opt.lr, betas=(opt.beta1, opt.beta2))  # / 10
                 self.optimizers.append(self.optimizer_D)
 
             if self.discriminator_mode in ["dual", "conditional"]:
-                self.optimizer_D_cond = torch.optim.Adam(self.netD_cond.parameters(), lr=opt.lr / 10, betas=(opt.beta1, opt.beta2))
+                self.optimizer_D_cond = torch.optim.Adam(self.netD_cond.parameters(), lr=opt.lr, betas=(opt.beta1, opt.beta2))  #  / 10
                 self.optimizers.append(self.optimizer_D_cond)
 
     def data_dependent_initialize(self, data):
@@ -311,11 +311,11 @@ class CUTModel(BaseModel):
             fake_B_paired = self.netG(self.A_paired)
             fake_AB = torch.cat((self.A_paired, fake_B_paired), dim=1)
             
-            lambda_cond = 5 # if epoch < 50 else 20  #self.opt.lambda_GAN if not "dual" else 5
+            lambda_cond = 1 if epoch < 50 else 5 #((epoch - 50) / 150) * 10 + 5 #20  #self.opt.lambda_GAN if not "dual" else 5
             self.loss_G_cond = self.criterionGAN(self.netD_cond(fake_AB), True).mean() * lambda_cond
 
-
-        self.loss_G = self.loss_G_GAN + loss_NCE_both + self.loss_G_cond
+        lambda_unpaired = 1 # if epoch < 50 else (1 - ((epoch - 50) / 150)) * 0.9 + 0.1 # TODO max_epoch
+        self.loss_G = lambda_unpaired * self.loss_G_GAN + lambda_unpaired * loss_NCE_both + self.loss_G_cond
         return self.loss_G
 
     def calculate_NCE_loss(self, src, tgt):
